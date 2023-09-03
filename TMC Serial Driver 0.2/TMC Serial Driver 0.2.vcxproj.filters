@@ -21,9 +21,15 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="TMC Serial Driver 0.2.ino" />
+    <ClCompile Include="TMC_Serial.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="__vm\.TMC Serial Driver 0.2.vsarduino.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="TMC_Serial.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
