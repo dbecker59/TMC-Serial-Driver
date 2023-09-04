@@ -117,7 +117,12 @@ public:
 		read_ticket(uint32_t s_address, reg_address r_address);
 	};
 
+	struct write_ticket : public access_ticket {
+		write_ticket(uint32_t s_address, reg_address r_address, uint32_t data, void(*Callback)(access_ticket*) = nullptr);
+	};
+
 	TMC_Serial(Usart* _Serial, uint32_t Baudrate);
 	read_ticket* read(uint32_t s_address, reg_address r_address, void(*Callback)(access_ticket*) = nullptr);
+	write_ticket* write(uint32_t s_address, reg_address r_address, uint32_t data, void(*Callback)(access_ticket*) = nullptr);
 };
 
