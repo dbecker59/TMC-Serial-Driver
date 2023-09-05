@@ -1,7 +1,11 @@
 #include "TMC_Serial.h"
 
+wrap<volatile TMC_Serial::access_ticket*> TMC_Serial::messageQueues[4];
+uint8_t TMC_Serial::idleTimes[4] = { -1, -1, -1, -1 };
+
 TMC_Serial::TMC_Serial(Usart* _Serial, uint32_t Baudrate) :
-	serial(_Serial)
+	serial(_Serial),
+	message_queue(messageQueues[serial - USART0])
 {
 	// ===== Configure GPIO pins ===============================================================================
 	Pio* _pio;					// Pio Bank
@@ -59,12 +63,12 @@ TMC_Serial::TMC_Serial(Usart* _Serial, uint32_t Baudrate) :
 		US_MR_NBSTOP_1_BIT |		// Set the number of stop bits
 		US_MR_CHMODE_NORMAL;		// Normal communication operation (can configure to loopback)
 
-	serial->US_BRGR = SystemCoreClock / Baudrate / 16;		// Configure the baudrate
+	serial->US_BRGR = SystemCoreClock / Baudrate / 16;	// Configure the baudrate
 
-	NVIC_EnableIRQ((IRQn_Type)(serial - USART0 + USART0_IRQn));
+	NVIC_EnableIRQ((IRQn_Type)(serial - USART0 + USART0_IRQn));		// Enable interrupts for 'serial'
 }
 
-
+// Function to calculate the CRC bytes
 uint8_t TMC_Serial::calc_CRC(uint8_t* datagram, uint8_t datagram_size)
 {
 	uint8_t crc = 0;
@@ -126,7 +130,7 @@ TMC_Serial::data_transfer_datagram::data_transfer_datagram(uint32_t s_address, r
 	CRC(calc_CRC((uint8_t*)this, datagram_length))
 {}
 
-uint32_t TMC_Serial::data_transfer_datagram::get_data()
+uint32_t TMC_Serial::data_transfer_datagram::get_data() volatile
 {
 	uint8_t data[] = { data0, data1, data2, data3 };	// create a 4 byte array
 	return *(uint32_t*)data;							// return the array as if its a full 32 bit integer
@@ -153,73 +157,168 @@ TMC_Serial::access_ticket::_request::_request(uint32_t s_address, reg_address r_
 {}
 
 
-TMC_Serial::access_ticket::access_ticket(uint32_t s_address, reg_address r_address, void(*Callback)(access_ticket*)) :
+TMC_Serial::access_ticket::access_ticket(uint32_t s_address, reg_address r_address, void(*Callback)(volatile access_ticket*)) :
 	request(s_address, r_address),
 	status(state::pending_transmission),
 	callback(Callback)
 {}
 
 
-TMC_Serial::access_ticket::access_ticket(uint32_t s_address, reg_address r_address, uint32_t data, void(*Callback)(access_ticket*)) :
+TMC_Serial::access_ticket::access_ticket(uint32_t s_address, reg_address r_address, uint32_t data, void(*Callback)(volatile access_ticket*)) :
 	request(s_address, r_address, data),
 	status(state::pending_transmission),
 	callback(Callback)
 {}
 
 
-TMC_Serial::read_ticket::read_ticket(uint32_t s_address, reg_address r_address) :
-	access_ticket(s_address, r_address)
+TMC_Serial::read_ticket::read_ticket(uint32_t s_address, reg_address r_address, void(*Callback)(volatile access_ticket*)) :
+	access_ticket(s_address, r_address, Callback)
 {}
 
 
-TMC_Serial::write_ticket::write_ticket(uint32_t s_address, reg_address r_address, uint32_t data, void(*Callback)(access_ticket*)) :
+TMC_Serial::write_ticket::write_ticket(uint32_t s_address, reg_address r_address, uint32_t data, void(*Callback)(volatile access_ticket*)) :
 	access_ticket(s_address, r_address, data, Callback)
 {}
 
-TMC_Serial::read_ticket* TMC_Serial::read(uint32_t s_address, reg_address r_address, void(*Callback)(access_ticket*))
+volatile  TMC_Serial::read_ticket* TMC_Serial::read(uint32_t s_address, reg_address r_address, void(*Callback)(volatile access_ticket*))
 {
-	read_ticket* ticket = new read_ticket(s_address, r_address);
+	noInterrupts();
 
-	// Throw away references used to simplify the code and make it clearer
-	read_access_datagram& transmission_datagram = ticket->request.read_data.memory.transmission;
-	data_transfer_datagram& reply_datagram = ticket->request.read_data.memory.reply;
+	volatile read_ticket* ticket = new volatile read_ticket(s_address, r_address, Callback);
+	message_queue.push(ticket);
+	if (message_queue.size() == 1)
+		begin_transfers(serial, ticket);
 
-	// Prepare the DMA to transfer the transmission datagram to the transmitter
-	serial->US_TPR = (uint32_t)&transmission_datagram;
-	
-	// Prepare the DMA to transfer write the first received data bytes to the reply datagram
-	//    The first bytes will be the echoed bytes from the transmitter, these will be overwritten
-	serial->US_RPR = (uint32_t)&reply_datagram;
-
-	// The next set of bytes are actually from the driver, this prepares the DMA to transfer
-	//    these bytes into the reply datagram, this overwrites the echoed bytes from the
-	//    transmitter.
-	serial->US_RNPR = (uint32_t)&reply_datagram;
-
-	serial->US_RCR = transmission_datagram.datagram_length;
-	serial->US_RNCR = reply_datagram.datagram_length;
-	serial->US_TCR = transmission_datagram.datagram_length;
-
-	// Enable DMA transfers as well as the receiver and transmitter.
-	serial->US_PTCR = US_PTCR_TXTEN | US_PTCR_RXTEN;
-	serial->US_CR = US_CR_TXEN | US_CR_RXEN;
+	interrupts();
 
 	return ticket;
 }
 
-TMC_Serial::write_ticket* TMC_Serial::write(uint32_t s_address, reg_address r_address, uint32_t data, void(*Callback)(access_ticket*))
+volatile TMC_Serial::write_ticket* TMC_Serial::write(uint32_t s_address, reg_address r_address, uint32_t data, void(*Callback)(volatile access_ticket*))
 {
-	write_ticket* ticket = new write_ticket(s_address, r_address, data, Callback);
-	data_transfer_datagram& transmission = ticket->request.write_data.transmission;
+	noInterrupts();
 
-	serial->US_TPR = (uint32_t)&transmission;
-	serial->US_RPR = (uint32_t)&transmission;
+	volatile write_ticket* ticket = new volatile write_ticket(s_address, r_address, data, Callback);
+	message_queue.push(ticket);
+	if (message_queue.size() == 1)
+		begin_transfers(serial, ticket);
 
-	serial->US_RCR = transmission.datagram_length;
-	serial->US_TCR = transmission.datagram_length;
-
-	serial->US_PTCR = US_PTCR_TXTEN | US_PTCR_RXTEN;
-	serial->US_CR = US_CR_TXEN | US_CR_RXEN;
+	interrupts();
 
 	return ticket;
 }
+
+void TMC_Serial::deleteTicketCallback(volatile access_ticket* ticket)
+{
+	Serial.print(ticket->status);
+	delete ticket;
+}
+
+void TMC_Serial::begin_transfers(Usart* serial, volatile  access_ticket* ticket)
+{
+	bool access_type = ticket->request.write_data.transmission.rw_access;
+
+	if (access_type)
+	{
+		volatile data_transfer_datagram& transmission = ticket->request.write_data.transmission;
+
+		serial->US_RPR = (uint32_t)&transmission;
+		serial->US_RNPR = 0;
+		serial->US_TPR = (uint32_t)&transmission;
+		serial->US_TNPR = 0;
+
+		serial->US_RCR = transmission.datagram_length;
+		serial->US_RNCR = 0;
+		serial->US_TCR = transmission.datagram_length;
+		serial->US_TNCR = 0;
+
+		serial->US_RTOR = 20; // Trigger a timeout if the start of two recieved characters excededs 20 bit-times
+
+		serial->US_CR = US_CR_TXEN | US_CR_RXEN;
+		serial->US_PTCR = US_PTCR_TXTEN | US_PTCR_RXTEN | US_CR_RETTO;
+		serial->US_IER = US_IER_RXBUFF | US_IER_TIMEOUT;
+	}
+	else
+	{
+		volatile read_access_datagram& transmission = ticket->request.read_data.memory.transmission;
+		volatile data_transfer_datagram& reply = ticket->request.read_data.memory.reply;
+
+		serial->US_RPR = (uint32_t)&reply;
+		serial->US_RNPR = (uint32_t)&reply;
+		serial->US_TPR = (uint32_t)&transmission;
+		serial->US_TNPR = 0;
+
+		serial->US_RCR = transmission.datagram_length;
+		serial->US_RNCR = reply.datagram_length;
+		serial->US_TCR = transmission.datagram_length;
+		serial->US_TNCR = 0;
+
+		serial->US_RTOR = 20; // Trigger a timeout if the start of two recieved characters excededs 20 bit-times
+
+		serial->US_CR = US_CR_TXEN | US_CR_RXEN | US_CR_RETTO;
+		serial->US_PTCR = US_PTCR_TXTEN | US_PTCR_RXTEN;
+		serial->US_IER = US_IER_RXBUFF | US_IER_TIMEOUT;
+	}
+}
+
+void USART0_Handler() {
+	uint32_t status = USART0->US_CSR;
+
+	if (status & US_CSR_RXBUFF)
+	{
+		wrap<volatile TMC_Serial::access_ticket*>& message_queue = TMC_Serial::messageQueues[0];
+		volatile TMC_Serial::access_ticket* ticket = message_queue.pull((bool)true);
+
+		if (ticket->request.read_data.memory.reply.CRC == TMC_Serial::calc_CRC((uint8_t*)&ticket->request.read_data.memory.reply, ticket->request.read_data.memory.reply.datagram_length))
+			ticket->status = TMC_Serial::access_ticket::state::completed_successfully;
+		else
+			ticket->status = TMC_Serial::access_ticket::state::crc_error;
+
+		if (ticket->callback != nullptr)	// execute the ticket's callback function if one was provided
+			ticket->callback(ticket);
+
+		USART0->US_RTOR = 0; // Trigger a timeout if the start of two recieved characters excededs 20 bit-times
+		USART0->US_CR = US_CR_TXDIS | US_CR_RXDIS | US_CR_RETTO;
+		USART0->US_PTCR = US_PTCR_TXTDIS | US_PTCR_RXTDIS;
+		USART0->US_IDR = US_IDR_RXBUFF | US_IDR_TIMEOUT;
+		if (!message_queue.empty())
+			TMC_Serial::idleTimes[0] = 0;
+	}
+	else if (status & US_CSR_TIMEOUT)
+	{
+		wrap<volatile TMC_Serial::access_ticket*>& message_queue = TMC_Serial::messageQueues[0];
+		volatile TMC_Serial::access_ticket* ticket = message_queue.pull((bool)true);
+
+		ticket->status = TMC_Serial::access_ticket::state::timedout;
+
+		if (ticket->callback != nullptr)	// execute the ticket's callback function if one was provided
+			ticket->callback(ticket);
+
+		USART0->US_RTOR = 0; // Trigger a timeout if the start of two recieved characters excededs 20 bit-times
+		USART0->US_CR = US_CR_TXDIS | US_CR_RXDIS | US_CR_RETTO;
+		USART0->US_PTCR = US_PTCR_TXTDIS | US_PTCR_RXTDIS;
+		USART0->US_IDR = US_IDR_RXBUFF | US_IDR_TIMEOUT;
+		if (!message_queue.empty())
+			TMC_Serial::idleTimes[0] = 0;
+	}
+}
+
+
+extern "C" {int sysTickHook() {
+	for (size_t i = 0; i < 4; i++)
+	{
+		uint8_t& idle_time = TMC_Serial::idleTimes[i];
+		if (idle_time == 0xFF)
+			continue;	// this message queue is not idle
+
+		wrap<volatile TMC_Serial::access_ticket*>& message_queue = TMC_Serial::messageQueues[i];
+		++idle_time;	// add 1ms to the idle time
+
+		if (idle_time > 1) {
+			TMC_Serial::begin_transfers(&(USART0[i]), message_queue.pull((bool)false));
+			Serial.print("\n Idle Finished");
+			idle_time = 0xFF;
+		}
+	}
+	return 0;
+}}
