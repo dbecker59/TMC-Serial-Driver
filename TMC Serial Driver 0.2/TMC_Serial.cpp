@@ -65,6 +65,9 @@ TMC_Serial::TMC_Serial(Usart* _Serial, uint32_t Baudrate) :
 
 	serial->US_BRGR = SystemCoreClock / Baudrate / 16;	// Configure the baudrate
 
+	serial->US_TNPR = 0;	// These registers are never needed
+	serial->US_TNCR = 0;	//    so we'll make sure they're 0.
+
 	NVIC_EnableIRQ((IRQn_Type)(serial - USART0 + USART0_IRQn));		// Enable interrupts for 'serial'
 }
 
@@ -93,7 +96,7 @@ uint8_t TMC_Serial::calc_CRC(uint8_t* datagram, uint8_t datagram_size)
 }
 
 
-TMC_Serial::read_access_datagram::read_access_datagram(uint8_t s_address, reg_address r_address) :
+TMC_Serial::read_access_datagram::read_access_datagram(uint8_t s_address, uint32_t r_address) :
 	sync(0b0101),
 	reserved(0x0),
 	device_address(s_address),
@@ -117,7 +120,7 @@ TMC_Serial::data_transfer_datagram::data_transfer_datagram() :	// initiallize th
 {}
 
 
-TMC_Serial::data_transfer_datagram::data_transfer_datagram(uint32_t s_address, reg_address r_address, const uint32_t& data) :
+TMC_Serial::data_transfer_datagram::data_transfer_datagram(uint32_t s_address, uint32_t r_address, const uint32_t& data) :
 	sync(0b0101),
 	reserved(0x0),
 	device_address(s_address),
@@ -130,57 +133,62 @@ TMC_Serial::data_transfer_datagram::data_transfer_datagram(uint32_t s_address, r
 	CRC(calc_CRC((uint8_t*)this, datagram_length))
 {}
 
-uint32_t TMC_Serial::data_transfer_datagram::get_data() volatile
+
+TMC_Serial::access_ticket::_request::_request(uint32_t s_address, uint32_t r_address) :
+	read_request(s_address, r_address)
+{}
+
+
+TMC_Serial::access_ticket::_request::_request(uint32_t s_address, uint32_t r_address, uint32_t data) :
+	data_transfer(s_address, r_address, data)
+{}
+
+
+TMC_Serial::access_ticket::access_ticket(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*)) :
+	datagram(s_address, r_address),
+	status(state::pending),
+	callback(Callback)
+{}
+
+
+TMC_Serial::access_ticket::access_ticket(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*)) :
+	datagram(s_address, r_address, data),
+	status(state::pending),
+	callback(Callback)
+{}
+
+bool TMC_Serial::access_ticket::transfer_complete() const volatile
 {
-	uint8_t data[] = { data0, data1, data2, data3 };	// create a 4 byte array
-	return *(uint32_t*)data;							// return the array as if its a full 32 bit integer
+	return status != state::pending;
 }
 
 
-TMC_Serial::read_request::read_request(uint32_t s_address, reg_address r_address) :
-	memory{ read_access_datagram(s_address, r_address) }
-{}
-
-
-TMC_Serial::write_request::write_request(uint32_t s_address, reg_address r_address, uint32_t data) :
-	transmission(s_address, r_address, data)
-{}
-
-
-TMC_Serial::access_ticket::_request::_request(uint32_t s_address, reg_address r_address) :
-	read_data(s_address, r_address)
-{}
-
-
-TMC_Serial::access_ticket::_request::_request(uint32_t s_address, reg_address r_address, uint32_t data) :
-	write_data(s_address, r_address, data)
-{}
-
-
-TMC_Serial::access_ticket::access_ticket(uint32_t s_address, reg_address r_address, void(*Callback)(volatile access_ticket*)) :
-	request(s_address, r_address),
-	status(state::pending_transmission),
-	callback(Callback)
-{}
-
-
-TMC_Serial::access_ticket::access_ticket(uint32_t s_address, reg_address r_address, uint32_t data, void(*Callback)(volatile access_ticket*)) :
-	request(s_address, r_address, data),
-	status(state::pending_transmission),
-	callback(Callback)
-{}
-
-
-TMC_Serial::read_ticket::read_ticket(uint32_t s_address, reg_address r_address, void(*Callback)(volatile access_ticket*)) :
+TMC_Serial::read_ticket::read_ticket(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*)) :
 	access_ticket(s_address, r_address, Callback)
 {}
 
+uint32_t TMC_Serial::read_ticket::get_data() volatile const
+{
+	noInterrupts();
+	uint8_t data[] = { datagram.data_transfer.data0, datagram.data_transfer.data1, datagram.data_transfer.data2, datagram.data_transfer.data3 };
+	interrupts();
+	return *(uint32_t*)data;
+}
 
-TMC_Serial::write_ticket::write_ticket(uint32_t s_address, reg_address r_address, uint32_t data, void(*Callback)(volatile access_ticket*)) :
+bool TMC_Serial::access_ticket::validate_crc() const volatile
+{
+	noInterrupts();
+	bool ret_val = datagram.data_transfer.CRC == calc_CRC((uint8_t*)&datagram.data_transfer, datagram.data_transfer.datagram_length);
+	interrupts();
+	return ret_val;
+}
+
+
+TMC_Serial::write_ticket::write_ticket(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*)) :
 	access_ticket(s_address, r_address, data, Callback)
 {}
 
-volatile  TMC_Serial::read_ticket* TMC_Serial::read(uint32_t s_address, reg_address r_address, void(*Callback)(volatile access_ticket*))
+volatile  TMC_Serial::read_ticket* TMC_Serial::read(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*))
 {
 	noInterrupts();
 
@@ -194,7 +202,7 @@ volatile  TMC_Serial::read_ticket* TMC_Serial::read(uint32_t s_address, reg_addr
 	return ticket;
 }
 
-volatile TMC_Serial::write_ticket* TMC_Serial::write(uint32_t s_address, reg_address r_address, uint32_t data, void(*Callback)(volatile access_ticket*))
+volatile TMC_Serial::write_ticket* TMC_Serial::write(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*))
 {
 	noInterrupts();
 
@@ -210,101 +218,40 @@ volatile TMC_Serial::write_ticket* TMC_Serial::write(uint32_t s_address, reg_add
 
 void TMC_Serial::deleteTicketCallback(volatile access_ticket* ticket)
 {
-	Serial.print(ticket->status);
 	delete ticket;
 }
 
 void TMC_Serial::begin_transfers(Usart* serial, volatile  access_ticket* ticket)
 {
-	bool access_type = ticket->request.write_data.transmission.rw_access;
+	bool access_type = ticket->datagram.data_transfer.rw_access;
 
-	if (access_type)
+	serial->US_RPR = (uint32_t)&ticket->datagram;
+	serial->US_RNPR = (uint32_t)&ticket->datagram;
+	serial->US_TPR = (uint32_t)&ticket->datagram;
+
+	if (ticket->datagram.data_transfer.rw_access)	// if this is a write ticket
 	{
-		volatile data_transfer_datagram& transmission = ticket->request.write_data.transmission;
-
-		serial->US_RPR = (uint32_t)&transmission;
-		serial->US_RNPR = 0;
-		serial->US_TPR = (uint32_t)&transmission;
-		serial->US_TNPR = 0;
-
-		serial->US_RCR = transmission.datagram_length;
-		serial->US_RNCR = 0;
-		serial->US_TCR = transmission.datagram_length;
-		serial->US_TNCR = 0;
-
-		serial->US_RTOR = 20; // Trigger a timeout if the start of two recieved characters excededs 20 bit-times
-
-		serial->US_CR = US_CR_TXEN | US_CR_RXEN;
-		serial->US_PTCR = US_PTCR_TXTEN | US_PTCR_RXTEN | US_CR_RETTO;
-		serial->US_IER = US_IER_RXBUFF | US_IER_TIMEOUT;
+		serial->US_RCR	= ticket->datagram.data_transfer.datagram_length;
+		serial->US_RNCR	= 0;
+		serial->US_TCR	= ticket->datagram.data_transfer.datagram_length;
 	}
-	else
+	else	// if this is a read ticket
 	{
-		volatile read_access_datagram& transmission = ticket->request.read_data.memory.transmission;
-		volatile data_transfer_datagram& reply = ticket->request.read_data.memory.reply;
+		serial->US_RCR	= ticket->datagram.read_request.datagram_length;
+		serial->US_RNCR	= ticket->datagram.data_transfer.datagram_length;
+		serial->US_TCR	= ticket->datagram.read_request.datagram_length;
 
-		serial->US_RPR = (uint32_t)&reply;
-		serial->US_RNPR = (uint32_t)&reply;
-		serial->US_TPR = (uint32_t)&transmission;
-		serial->US_TNPR = 0;
-
-		serial->US_RCR = transmission.datagram_length;
-		serial->US_RNCR = reply.datagram_length;
-		serial->US_TCR = transmission.datagram_length;
-		serial->US_TNCR = 0;
-
-		serial->US_RTOR = 20; // Trigger a timeout if the start of two recieved characters excededs 20 bit-times
-
-		serial->US_CR = US_CR_TXEN | US_CR_RXEN | US_CR_RETTO;
-		serial->US_PTCR = US_PTCR_TXTEN | US_PTCR_RXTEN;
-		serial->US_IER = US_IER_RXBUFF | US_IER_TIMEOUT;
+		serial->US_RTOR = 24;			// Trigger a timeout if the start of two recieved characters excedes 24 bit-times (1/baudrate)
+		serial->US_CR = US_CR_RETTO;	// Rearm Timeout, this tells the timeout counter to begin immediately
 	}
-}
 
-void USART0_Handler() {
-	uint32_t status = USART0->US_CSR;
-
-	if (status & US_CSR_RXBUFF)
-	{
-		wrap<volatile TMC_Serial::access_ticket*>& message_queue = TMC_Serial::messageQueues[0];
-		volatile TMC_Serial::access_ticket* ticket = message_queue.pull((bool)true);
-
-		if (ticket->request.read_data.memory.reply.CRC == TMC_Serial::calc_CRC((uint8_t*)&ticket->request.read_data.memory.reply, ticket->request.read_data.memory.reply.datagram_length))
-			ticket->status = TMC_Serial::access_ticket::state::completed_successfully;
-		else
-			ticket->status = TMC_Serial::access_ticket::state::crc_error;
-
-		if (ticket->callback != nullptr)	// execute the ticket's callback function if one was provided
-			ticket->callback(ticket);
-
-		USART0->US_RTOR = 0; // Trigger a timeout if the start of two recieved characters excededs 20 bit-times
-		USART0->US_CR = US_CR_TXDIS | US_CR_RXDIS | US_CR_RETTO;
-		USART0->US_PTCR = US_PTCR_TXTDIS | US_PTCR_RXTDIS;
-		USART0->US_IDR = US_IDR_RXBUFF | US_IDR_TIMEOUT;
-		if (!message_queue.empty())
-			TMC_Serial::idleTimes[0] = 0;
-	}
-	else if (status & US_CSR_TIMEOUT)
-	{
-		wrap<volatile TMC_Serial::access_ticket*>& message_queue = TMC_Serial::messageQueues[0];
-		volatile TMC_Serial::access_ticket* ticket = message_queue.pull((bool)true);
-
-		ticket->status = TMC_Serial::access_ticket::state::timedout;
-
-		if (ticket->callback != nullptr)	// execute the ticket's callback function if one was provided
-			ticket->callback(ticket);
-
-		USART0->US_RTOR = 0; // Trigger a timeout if the start of two recieved characters excededs 20 bit-times
-		USART0->US_CR = US_CR_TXDIS | US_CR_RXDIS | US_CR_RETTO;
-		USART0->US_PTCR = US_PTCR_TXTDIS | US_PTCR_RXTDIS;
-		USART0->US_IDR = US_IDR_RXBUFF | US_IDR_TIMEOUT;
-		if (!message_queue.empty())
-			TMC_Serial::idleTimes[0] = 0;
-	}
+	serial->US_CR = US_CR_TXEN | US_CR_RXEN;
+	serial->US_PTCR = US_PTCR_TXTEN | US_PTCR_RXTEN;
+	serial->US_IER = US_IER_RXBUFF | US_IER_TIMEOUT;
 }
 
 
-extern "C" {int sysTickHook() {
+inline void message_queue_idle_handler() {
 	for (size_t i = 0; i < 4; i++)
 	{
 		uint8_t& idle_time = TMC_Serial::idleTimes[i];
@@ -316,9 +263,70 @@ extern "C" {int sysTickHook() {
 
 		if (idle_time > 1) {
 			TMC_Serial::begin_transfers(&(USART0[i]), message_queue.pull((bool)false));
-			Serial.print("\n Idle Finished");
 			idle_time = 0xFF;
 		}
 	}
-	return 0;
-}}
+}
+
+extern "C" {
+	int sysTickHook() {
+		message_queue_idle_handler();
+		return 0;
+	}
+}
+
+
+void USART_Handler(Usart* serial, uint32_t status) {
+	if ( (status & US_CSR_RXBUFF) || (status & US_CSR_TIMEOUT) )
+	{
+		wrap<volatile TMC_Serial::access_ticket*>& message_queue = TMC_Serial::messageQueues[0];
+		volatile TMC_Serial::access_ticket* ticket = message_queue.pull((bool)true);
+
+		if (!message_queue.empty())
+			TMC_Serial::idleTimes[0] = 0;
+
+		serial->US_RTOR = 0; // Disable timeouts
+		serial->US_CR = US_CR_TXDIS | US_CR_RXDIS | US_CR_RSTTX | US_CR_RSTRX;
+		serial->US_PTCR = US_PTCR_TXTDIS | US_PTCR_RXTDIS;
+		serial->US_IDR = US_IDR_RXBUFF | US_IDR_TIMEOUT;
+
+		// If the ticket timed out, assign the status the timedout status
+		if (status & US_CSR_TIMEOUT)
+			ticket->status = TMC_Serial::access_ticket::state::timedout;
+		
+		// Everything completed successfully, assign the completed_successfully flag
+		else if (ticket->validate_crc())
+			ticket->status = TMC_Serial::access_ticket::state::completed_successfully;
+
+		// If the ticket's CRC does not match what it should, assign the crc_error status
+		else
+			ticket->status = TMC_Serial::access_ticket::state::crc_error;
+
+		if (ticket->callback != nullptr)	// execute the ticket's callback function if one was provided
+			ticket->callback(ticket);
+	}
+}
+
+
+void USART0_Handler() {
+	uint32_t status = USART0->US_CSR;
+	USART_Handler(USART0, status);
+}
+
+
+void USART1_Handler() {
+	uint32_t status = USART1->US_CSR;
+	USART_Handler(USART1, status);
+}
+
+
+void USART2_Handler() {
+	uint32_t status = USART2->US_CSR;
+	USART_Handler(USART2, status);
+}
+
+
+void USART3_Handler() {
+	uint32_t status = USART3->US_CSR;
+	USART_Handler(USART3, status);
+}
