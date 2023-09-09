@@ -1,7 +1,6 @@
 #pragma once
 #include <Arduino.h>
-#include "wrap.h"
-
+#include "Ring_Buffer.h"
 
 class TMC_Serial
 {
@@ -98,32 +97,33 @@ public:
 			timedout = 3				// Communication timedout on data_transfer
 		};
 
-		uint8_t status;										// current state of this ticket
-		void(* const callback)(volatile access_ticket*);	// callback to be called when the ticket has completed or failed
+		uint8_t status;																	// current state of this ticket
+		void(* const callback)(volatile access_ticket*, void* additional_parameters);	// callback to be called when the ticket has completed or failed
+		void* callback_parameters;
 
-		access_ticket(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*) = nullptr);
-		access_ticket(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*) = nullptr);
+		access_ticket(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*, void*), void* Callback_parameters);
+		access_ticket(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*, void*), void* Callback_parameters);
 
 		bool transfer_complete() const volatile;
 		bool validate_crc() const volatile;
+		uint32_t get_data() volatile const;
 	};
 
 
 	// Used to handle read tickets that read registers from the driver.
 	struct read_ticket : public access_ticket {
-		read_ticket(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*) = nullptr);
-
-		uint32_t get_data() volatile const;
+		read_ticket(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*, void* additional_parameters), void* Callback_parameters);
 	};
 
 	// Used to handle tickets that write to the drivers registers
 	struct write_ticket : public access_ticket {
-		write_ticket(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*) = deleteTicketCallback);
+		write_ticket(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*, void* additional_parameters), void* Callback_parameters);
 	};
 
 	static void begin_transfers(Usart* serial, volatile access_ticket* ticket);
 
-	static void deleteTicketCallback(volatile access_ticket* ticket);
+	static void deleteTicketCallback(volatile access_ticket* ticket, void*);
+	static void storeRegisterAt(volatile access_ticket* ticket, void*);
 
 	TMC_Serial(Usart* _Serial, uint32_t Baudrate);
 	
@@ -131,22 +131,23 @@ public:
 	//    s_address: The slave address of the driver to read from
 	//    r_address: Address of the register to read from
 	//     Callback: A callback function that'll be called whenever the transfer has compeleted
-	volatile read_ticket* read(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*) = nullptr);
+	volatile read_ticket* read(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*, void* additional_parameters) = nullptr, void* Callback_parameters = nullptr);
 
 
 	// Read from the 's_address' driver's 'r_register' register
-	//    s_address: The slave address of the driver to read from
-	//    r_address: Address of the register to read from
-	//         data: The data to write to the register
-	//     Callback: A callback function that'll be called whenever the transfer has compeleted
-	volatile write_ticket* write(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*) = deleteTicketCallback);
+	//	s_address: The slave address of the driver to read from
+	//	r_address: Address of the register to read from
+	//	data: The data to write to the register
+	//	Callback: A callback function that'll be called whenever the transfer has compeleted
+	//	Callback_parameters: A pointer to the parameters the callback function will utilize
+	volatile write_ticket* write(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*, void* additional_parameters) = deleteTicketCallback, void* Callback_parameters = nullptr);
 
 
 protected:
 	Usart* serial;											// The USART peripheral we're transmitting over
-	static wrap<volatile access_ticket*> messageQueues[];	// The queues of messages to transmit over each USART
+	static Ring_Buffer<volatile access_ticket*> messageQueues[];	// The queues of messages to transmit over each USART
 	static uint8_t idleTimes[];								// How long each queue has been idle for
-	wrap<volatile access_ticket*>& message_queue;			// The message queue this instance will work with
+	Ring_Buffer<volatile access_ticket*>& message_queue;			// The message queue this instance will work with
 
 	friend void USART_Handler(Usart* serial, uint32_t status);
 	friend void USART0_Handler();

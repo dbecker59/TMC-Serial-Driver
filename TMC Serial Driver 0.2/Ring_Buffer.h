@@ -8,7 +8,7 @@
 
 
 template<typename _T>
-class wrap
+class Ring_Buffer
 {
 	_T* _front;										// Pointer to the first element of the allocated memory space
 	_T* _back;										// Pointer to just past the last element of the allocated memory space
@@ -24,7 +24,7 @@ class wrap
 	void reallocate(const size_t _numElem);
 
 public:
-	// wrap<_T>'s iterator
+	// Ring_Buffer<_T>'s iterator
 	class iterator;
 
 	// returns the iterator of the first element in the container
@@ -34,15 +34,15 @@ public:
 	iterator end() const;
 
 	// default constructor
-	wrap();
+	Ring_Buffer();
 
 	// Non-Default constructor
 	//		reserve:
 	//			Size (in _T elements) to initialize the container as.
-	wrap(const size_t reserve);
+	Ring_Buffer(const size_t reserve);
 
 	// Default destructor
-	~wrap();
+	~Ring_Buffer();
 
 	// Returns the number of elements in the container
 	size_t size() const;
@@ -123,9 +123,9 @@ public:
 };
 
 
-// wrap<_T>'s iterator
+// Ring_Buffer<_T>'s iterator
 template<typename _T>
-class wrap<_T>::iterator {
+class Ring_Buffer<_T>::iterator {
 	const _T* _ptr;
 
 public:
@@ -159,7 +159,7 @@ public:
 
 // reallocates the memory to a new larger block
 template<typename _T>
-inline void wrap<_T>::reallocate()
+inline void Ring_Buffer<_T>::reallocate()
 {
 	reallocate(WRAP_RESIZE_WEIGHT * capacity());
 }
@@ -169,7 +169,7 @@ inline void wrap<_T>::reallocate()
 //		_numElem:
 //			Number of elements to increase the size by
 template<typename _T>
-void wrap<_T>::reallocate(const size_t _numElem)
+void Ring_Buffer<_T>::reallocate(const size_t _numElem)
 {
 	_T* newFront = new _T[capacity() + _numElem];
 	memmove(newFront, _first, sizeof(_T) * size());
@@ -188,7 +188,7 @@ void wrap<_T>::reallocate(const size_t _numElem)
 
 // returns the iterator of the first element in the container
 template<typename _T>
-inline typename wrap<_T>::iterator wrap<_T>::begin() const
+inline typename Ring_Buffer<_T>::iterator Ring_Buffer<_T>::begin() const
 {
 	return iterator(_first);
 }
@@ -196,7 +196,7 @@ inline typename wrap<_T>::iterator wrap<_T>::begin() const
 
 // returns the iterator just past the last element in the container
 template<typename _T>
-inline typename wrap<_T>::iterator wrap<_T>::end() const
+inline typename Ring_Buffer<_T>::iterator Ring_Buffer<_T>::end() const
 {
 	return iterator(_last);
 }
@@ -204,7 +204,7 @@ inline typename wrap<_T>::iterator wrap<_T>::end() const
 
 // default constructor
 template<typename _T>
-wrap<_T>::wrap() :
+Ring_Buffer<_T>::Ring_Buffer() :
 	_front(new _T[WRAP_DEFAULT_CAPACITY]),
 	_back(_front + WRAP_DEFAULT_CAPACITY),
 	_first(_front),
@@ -216,7 +216,7 @@ wrap<_T>::wrap() :
 //		reserve:
 //			Size (in elements) to initialize the container as.
 template<typename _T>
-wrap<_T>::wrap(const size_t reserve) :
+Ring_Buffer<_T>::Ring_Buffer(const size_t reserve) :
 	_front(new _T[reserve]),
 	_back(_front + reserve),
 	_first(_front),
@@ -226,7 +226,7 @@ wrap<_T>::wrap(const size_t reserve) :
 
 // Default destructor
 template<typename _T>
-wrap<_T>::~wrap()
+Ring_Buffer<_T>::~Ring_Buffer()
 {
 	delete[] _front;
 }
@@ -234,7 +234,7 @@ wrap<_T>::~wrap()
 
 // Returns the number of elements in the container
 template<typename _T>
-inline size_t wrap<_T>::size() const
+inline size_t Ring_Buffer<_T>::size() const
 {
 	return _last - _first;
 }
@@ -242,14 +242,14 @@ inline size_t wrap<_T>::size() const
 
 // Returns the number of elements the container can hold before reallocation
 template<typename _T>
-inline size_t wrap<_T>::capacity() const
+inline size_t Ring_Buffer<_T>::capacity() const
 {
 	return _back - _front;
 }
 
 // Returns whether the container is empty
 template<typename _T>
-inline bool wrap<_T>::empty() const volatile
+inline bool Ring_Buffer<_T>::empty() const volatile
 {
 	return !(_first < _last);
 }
@@ -259,7 +259,7 @@ inline bool wrap<_T>::empty() const volatile
 //		- Shifts all elements to the front of the memory block
 //		- Reallocates the memory block to a larger block if the container is near capacity
 template<typename _T>
-inline bool wrap<_T>::normalize()
+inline bool Ring_Buffer<_T>::normalize()
 {
 	if (!(size() < (WRAP_NORMALIZE_REALLOCATE_BIAS * capacity())))
 	{
@@ -285,7 +285,7 @@ inline bool wrap<_T>::normalize()
 //		_elem:
 //			Element to be appended
 template<typename _T>
-bool wrap<_T>::push(const _T& _elem)
+bool Ring_Buffer<_T>::push(const _T& _elem)
 {
 	if (_last == _back) {
 		if (_first == _front)
@@ -320,7 +320,7 @@ bool wrap<_T>::push(const _T& _elem)
 //		NOTE:	_numElem must not be more than the size of buffer!
 //				i.e. 'buffer' to 'buffer + _numElem' must be initiallized memory!
 template<typename _T>
-bool wrap<_T>::push(const _T * const buffer, const size_t _numElem)
+bool Ring_Buffer<_T>::push(const _T * const buffer, const size_t _numElem)
 {
 	if (!(_back - _last > _numElem))
 	{
@@ -351,7 +351,7 @@ bool wrap<_T>::push(const _T * const buffer, const size_t _numElem)
 
 // Removes the first element in the container
 template<typename _T>
-inline void wrap<_T>::pop()
+inline void Ring_Buffer<_T>::pop()
 {
 	if (_first == _last)
 		return;
@@ -367,7 +367,7 @@ inline void wrap<_T>::pop()
 //		_numElem:
 //			Number of elements to remove from the front of the container
 template<typename _T>
-inline void wrap<_T>::pop(const size_t _numElem)
+inline void Ring_Buffer<_T>::pop(const size_t _numElem)
 {
 #ifdef _DEBUG 	// if in debug, set memory to 0
 	memset(_first, 0, sizeof(_T) * _numElem);
@@ -381,7 +381,7 @@ inline void wrap<_T>::pop(const size_t _numElem)
 //			The terminator of the pop operation, all elements up to and including the first instance of term are removed
 //		NOTE: if there is no element equal to the 'term' in the container, no elements are removed
 template<typename _T>
-void wrap<_T>::pop(const _T& term)
+void Ring_Buffer<_T>::pop(const _T& term)
 {
 	_T* termPtr = std::find(_first, _last, term);
 	if (termPtr != _last)
@@ -396,7 +396,7 @@ void wrap<_T>::pop(const _T& term)
 
 // Clears all elements in the container
 template<typename _T>
-inline void wrap<_T>::clear()
+inline void Ring_Buffer<_T>::clear()
 {
 #ifdef _DEBUG	// if in debug, set memory to 0
 	memset(_first, 0, sizeof(_T)*size());
@@ -412,7 +412,7 @@ inline void wrap<_T>::clear()
 //			Determines whether to leave the copied element or whether to remove it.
 //		NOTE: returns the default element '_T()' if container is empty, consider testing if empty before use.
 template<typename _T>
-inline _T wrap<_T>::pull(bool popOff)
+inline _T Ring_Buffer<_T>::pull(bool popOff)
 {
 	if (_first == _last)
 		return _T();
@@ -434,7 +434,7 @@ inline _T wrap<_T>::pull(bool popOff)
 //					then the function returns nullptr, consider checking the return value.
 //		WARNING: Must delete the returned buffer after use using delete[]
 template<typename _T>
-_T* wrap<_T>::pull(const size_t _numElem, bool popOff)
+_T* Ring_Buffer<_T>::pull(const size_t _numElem, bool popOff)
 {
 	if (_numElem > size())
 		return nullptr;
@@ -460,7 +460,7 @@ _T* wrap<_T>::pull(const size_t _numElem, bool popOff)
 //					consider checking the return value.
 //		WARNING: Must delete the returned buffer after use using delete[]
 template<typename _T>
-_T* wrap<_T>::pull(const _T& term, bool popOff)
+_T* Ring_Buffer<_T>::pull(const _T& term, bool popOff)
 {
 	_T* termPtr = std::find(_first, _last, term);
 	if (termPtr == _last)
@@ -487,122 +487,122 @@ _T* wrap<_T>::pull(const _T& term, bool popOff)
 //		NOTE: if there is no element in the container equal to 'elem', the function
 //					returns an iterator just past the end of the container
 template<typename _T>
-inline typename wrap<_T>::iterator wrap<_T>::find(const _T& elem)
+inline typename Ring_Buffer<_T>::iterator Ring_Buffer<_T>::find(const _T& elem)
 {
 	return iterator(std::find(_first, _last, elem));
 }
 
 
 template<typename _T>
-inline wrap<_T>::iterator::iterator() :
+inline Ring_Buffer<_T>::iterator::iterator() :
 	_ptr(nullptr)
 {}
 
 
 template<typename _T>
-inline wrap<_T>::iterator::iterator(const _T* ptr) :
+inline Ring_Buffer<_T>::iterator::iterator(const _T* ptr) :
 	_ptr(ptr)
 {}
 
 template<typename _T>
-inline wrap<_T>::iterator::iterator(const wrap<_T>::iterator& itr) :
+inline Ring_Buffer<_T>::iterator::iterator(const Ring_Buffer<_T>::iterator& itr) :
 	_ptr(itr._ptr)
 {}
 
 
 template<typename _T>
-inline wrap<_T>::iterator::~iterator()
+inline Ring_Buffer<_T>::iterator::~iterator()
 {}
 
 template<typename _T>
-inline wrap<_T>::iterator::operator const _T*() const
+inline Ring_Buffer<_T>::iterator::operator const _T*() const
 {
 	return _ptr;
 }
 
 template<typename _T>
-inline typename wrap<_T>::iterator & wrap<_T>::iterator::operator=(const iterator& itr)
+inline typename Ring_Buffer<_T>::iterator & Ring_Buffer<_T>::iterator::operator=(const iterator& itr)
 {
 	_ptr = itr._ptr;
 	return *this;
 }
 
 template<typename _T>
-inline const _T& wrap<_T>::iterator::operator*() const
+inline const _T& Ring_Buffer<_T>::iterator::operator*() const
 {
 	return *_ptr;
 }
 
 template<typename _T>
-inline typename wrap<_T>::iterator wrap<_T>::iterator::operator+(const int& rhs) const
+inline typename Ring_Buffer<_T>::iterator Ring_Buffer<_T>::iterator::operator+(const int& rhs) const
 {
 	return iterator(_ptr + rhs);
 }
 
 template<typename _T>
-inline typename wrap<_T>::iterator wrap<_T>::iterator::operator-(const int& rhs) const
+inline typename Ring_Buffer<_T>::iterator Ring_Buffer<_T>::iterator::operator-(const int& rhs) const
 {
 	return iterator(_ptr - rhs);
 }
 
 template<typename _T>
-inline int wrap<_T>::iterator::operator-(const iterator& rhs) const
+inline int Ring_Buffer<_T>::iterator::operator-(const iterator& rhs) const
 {
 	return _ptr - rhs._ptr;
 }
 
 template<typename _T>
-inline typename wrap<_T>::iterator& wrap<_T>::iterator::operator++()
+inline typename Ring_Buffer<_T>::iterator& Ring_Buffer<_T>::iterator::operator++()
 {
 	++_ptr;
 	return *this;
 }
 
 template<typename _T>
-inline typename wrap<_T>::iterator wrap<_T>::iterator::operator++(int)
+inline typename Ring_Buffer<_T>::iterator Ring_Buffer<_T>::iterator::operator++(int)
 {
 	return iterator(_ptr++);
 }
 
 template<typename _T>
-inline typename wrap<_T>::iterator& wrap<_T>::iterator::operator--()
+inline typename Ring_Buffer<_T>::iterator& Ring_Buffer<_T>::iterator::operator--()
 {
 	--_ptr;
 	return *this;
 }
 
 template<typename _T>
-typename wrap<_T>::iterator wrap<_T>::iterator::operator--(int)
+typename Ring_Buffer<_T>::iterator Ring_Buffer<_T>::iterator::operator--(int)
 {
 	return iterator(_ptr--);
 }
 
 template<typename _T>
-inline bool wrap<_T>::iterator::operator<(const iterator & rhs) const
+inline bool Ring_Buffer<_T>::iterator::operator<(const iterator & rhs) const
 {
 	return _ptr < rhs._ptr;
 }
 
 template<typename _T>
-inline bool wrap<_T>::iterator::operator>(const iterator & rhs) const
+inline bool Ring_Buffer<_T>::iterator::operator>(const iterator & rhs) const
 {
 	return _ptr > rhs._ptr;
 }
 
 template<typename _T>
-inline bool wrap<_T>::iterator::operator==(const iterator & rhs) const
+inline bool Ring_Buffer<_T>::iterator::operator==(const iterator & rhs) const
 {
 	return _ptr == rhs._ptr;
 }
 
 template<typename _T>
-inline bool wrap<_T>::iterator::operator<=(const iterator & rhs) const
+inline bool Ring_Buffer<_T>::iterator::operator<=(const iterator & rhs) const
 {
 	return _ptr <= rhs._ptr;
 }
 
 template<typename _T>
-inline bool wrap<_T>::iterator::operator>=(const iterator & rhs) const
+inline bool Ring_Buffer<_T>::iterator::operator>=(const iterator & rhs) const
 {
 	return _ptr >= rhs._ptr;
 }

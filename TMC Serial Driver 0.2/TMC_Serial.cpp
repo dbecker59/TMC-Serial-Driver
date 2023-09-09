@@ -1,6 +1,6 @@
 #include "TMC_Serial.h"
 
-wrap<volatile TMC_Serial::access_ticket*> TMC_Serial::messageQueues[4];
+Ring_Buffer<volatile TMC_Serial::access_ticket*> TMC_Serial::messageQueues[4];
 uint8_t TMC_Serial::idleTimes[4] = { -1, -1, -1, -1 };
 
 TMC_Serial::TMC_Serial(Usart* _Serial, uint32_t Baudrate) :
@@ -144,17 +144,18 @@ TMC_Serial::access_ticket::_request::_request(uint32_t s_address, uint32_t r_add
 {}
 
 
-TMC_Serial::access_ticket::access_ticket(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*)) :
+TMC_Serial::access_ticket::access_ticket(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*, void*), void* Callback_parameters) :
 	datagram(s_address, r_address),
 	status(state::pending),
-	callback(Callback)
+	callback(Callback),
+	callback_parameters(Callback_parameters)
 {}
 
-
-TMC_Serial::access_ticket::access_ticket(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*)) :
+TMC_Serial::access_ticket::access_ticket(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*, void*), void* Callback_parameters) :
 	datagram(s_address, r_address, data),
 	status(state::pending),
-	callback(Callback)
+	callback(Callback),
+	callback_parameters(Callback_parameters)
 {}
 
 bool TMC_Serial::access_ticket::transfer_complete() const volatile
@@ -163,11 +164,11 @@ bool TMC_Serial::access_ticket::transfer_complete() const volatile
 }
 
 
-TMC_Serial::read_ticket::read_ticket(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*)) :
-	access_ticket(s_address, r_address, Callback)
+TMC_Serial::read_ticket::read_ticket(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*, void* additional_parameters), void* Callback_parameters) :
+	access_ticket(s_address, r_address, Callback, Callback_parameters)
 {}
 
-uint32_t TMC_Serial::read_ticket::get_data() volatile const
+uint32_t TMC_Serial::access_ticket::get_data() volatile const
 {
 	noInterrupts();
 	uint8_t data[] = { datagram.data_transfer.data0, datagram.data_transfer.data1, datagram.data_transfer.data2, datagram.data_transfer.data3 };
@@ -184,15 +185,15 @@ bool TMC_Serial::access_ticket::validate_crc() const volatile
 }
 
 
-TMC_Serial::write_ticket::write_ticket(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*)) :
-	access_ticket(s_address, r_address, data, Callback)
+TMC_Serial::write_ticket::write_ticket(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*, void*), void* Callback_parameters) :
+	access_ticket(s_address, r_address, data, Callback, Callback_parameters)
 {}
 
-volatile  TMC_Serial::read_ticket* TMC_Serial::read(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*))
+volatile  TMC_Serial::read_ticket* TMC_Serial::read(uint32_t s_address, uint32_t r_address, void(*Callback)(volatile access_ticket*, void*), void* Callback_parameters)
 {
 	noInterrupts();
 
-	volatile read_ticket* ticket = new volatile read_ticket(s_address, r_address, Callback);
+	volatile read_ticket* ticket = new volatile read_ticket(s_address, r_address, Callback, Callback_parameters);
 	message_queue.push(ticket);
 	if (message_queue.size() == 1)
 		begin_transfers(serial, ticket);
@@ -202,11 +203,11 @@ volatile  TMC_Serial::read_ticket* TMC_Serial::read(uint32_t s_address, uint32_t
 	return ticket;
 }
 
-volatile TMC_Serial::write_ticket* TMC_Serial::write(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*))
+volatile TMC_Serial::write_ticket* TMC_Serial::write(uint32_t s_address, uint32_t r_address, uint32_t data, void(*Callback)(volatile access_ticket*, void* additional_parameters), void* Callback_parameters)
 {
 	noInterrupts();
 
-	volatile write_ticket* ticket = new volatile write_ticket(s_address, r_address, data, Callback);
+	volatile write_ticket* ticket = new volatile write_ticket(s_address, r_address, data, Callback, Callback_parameters);
 	message_queue.push(ticket);
 	if (message_queue.size() == 1)
 		begin_transfers(serial, ticket);
@@ -216,9 +217,21 @@ volatile TMC_Serial::write_ticket* TMC_Serial::write(uint32_t s_address, uint32_
 	return ticket;
 }
 
-void TMC_Serial::deleteTicketCallback(volatile access_ticket* ticket)
+void TMC_Serial::deleteTicketCallback(volatile access_ticket* ticket, void*)
 {
 	delete ticket;
+}
+
+void TMC_Serial::storeRegisterAt(volatile access_ticket* ticket, void* uint32_pointer)
+{
+	*(uint32_t*)uint32_pointer = ticket->get_data();
+
+	// The code above looks a bit complex because of the type punning
+	//    essentially all thats going on is were treating the void*
+	//    'uint32_pointer' as an actual uint32_t* so we can write to
+	//    it. Then we're treating the access_ticket* 'ticket' as a
+	//    read_ticket* so we can call the 'get_data()' method to easily
+	//    retrieve the data from the datagram.'
 }
 
 void TMC_Serial::begin_transfers(Usart* serial, volatile  access_ticket* ticket)
@@ -258,7 +271,7 @@ inline void message_queue_idle_handler() {
 		if (idle_time == 0xFF)
 			continue;	// this message queue is not idle
 
-		wrap<volatile TMC_Serial::access_ticket*>& message_queue = TMC_Serial::messageQueues[i];
+		Ring_Buffer<volatile TMC_Serial::access_ticket*>& message_queue = TMC_Serial::messageQueues[i];
 		++idle_time;	// add 1ms to the idle time
 
 		if (idle_time > 1) {
@@ -279,7 +292,7 @@ extern "C" {
 void USART_Handler(Usart* serial, uint32_t status) {
 	if ( (status & US_CSR_RXBUFF) || (status & US_CSR_TIMEOUT) )
 	{
-		wrap<volatile TMC_Serial::access_ticket*>& message_queue = TMC_Serial::messageQueues[0];
+		Ring_Buffer<volatile TMC_Serial::access_ticket*>& message_queue = TMC_Serial::messageQueues[0];
 		volatile TMC_Serial::access_ticket* ticket = message_queue.pull((bool)true);
 
 		if (!message_queue.empty())
@@ -303,7 +316,7 @@ void USART_Handler(Usart* serial, uint32_t status) {
 			ticket->status = TMC_Serial::access_ticket::state::crc_error;
 
 		if (ticket->callback != nullptr)	// execute the ticket's callback function if one was provided
-			ticket->callback(ticket);
+			ticket->callback(ticket, ticket->callback_parameters);
 	}
 }
 

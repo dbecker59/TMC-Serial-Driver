@@ -20,26 +20,33 @@ void loop() {
 	TMC2209.write(0, TMC_Serial::CHOPCONF, 0b00010110000000000000000001010011);
 	TMC2209.write(0, TMC_Serial::IHOLD_IRUN, (2 << 0) | (31 << 8) | (1 << 16));
 	TMC2209.write(0, TMC_Serial::TPWMTHRS, 200);
-	volatile TMC_Serial::read_ticket* r_ticket = TMC2209.read(0, TMC_Serial::IOIN);
+
+	uint32_t read_data;
+	volatile TMC_Serial::read_ticket* r_ticket = TMC2209.read(0, TMC_Serial::IOIN, TMC_Serial::storeRegisterAt, &read_data);
 	while (!(r_ticket->transfer_complete()))
 	{ /* wait for transfer */ }
+
 	Serial.print("\n\n ENA: ");
-	Serial.print(r_ticket->get_data() & (1 << 0) ? "Disabled" : "Enabled");
+	Serial.print(read_data & (1 << 0) ? "Disabled" : "Enabled");
 	Serial.print("\n Status: ");
 	Serial.print(r_ticket->status);
+	Serial.print("\n Data: ");
+	Serial.print(read_data, BIN);
+	delete r_ticket;
 
-	delay(2000);
-	for (int32_t i = 0; i < 20000; )
+	for (int32_t i = 0000; i < 20000; )
 	{
 		TMC2209.write(0, TMC_Serial::VACTUAL, i);
-		i += 80;
+		i += 20;
+		delay(10);
 	}
 	delay(2000);
 	for (int32_t i = 20000; i > 0; )
 	{
+		i -= 200;
 		TMC2209.write(0, TMC_Serial::VACTUAL, i);
-		i -= 80;
 	}
 
 	TMC2209.write(0, TMC_Serial::VACTUAL, 0);
+	delay(2000);
 }
